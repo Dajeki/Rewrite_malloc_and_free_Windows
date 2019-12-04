@@ -77,7 +77,7 @@ static block_t * _free_list = NULL;
     void remove_from_free_list(block_t * block)
     {
         //if there is no block prev
-        if (!block->prev)
+        if ((int)block->prev == NULL)
         {
             //if there is a block next
             if (block->next)
@@ -102,15 +102,13 @@ static block_t * _free_list = NULL;
         {
             //block's next's previous is the block's current previous
             block->next->prev = block->prev;
-        }
-        
+        }      
     }
-
 
 
     block_t * split_memory_block(block_t * initial_block, size_t size)
     {
-        //get a pointer to the block of memory - header
+        //get a pointer to the block of memory offset to account for header
         void * memory_block = MEMORY_BLOCK(initial_block);
 
         //the new free ptr block location is the memory block ptr + the size of the data
@@ -118,9 +116,11 @@ static block_t * _free_list = NULL;
 
         //get the new free data in the block by getting the intial size - the intial data + metadata struct block_t
         newptr->size = initial_block->size - (size + sizeof(block_t));
-
+        printf("Intial block is %d\n",initial_block->size);
+        printf("New block size is %d\n", newptr->size);
         //the intial block space is now ONLY the space of the data if it gets freed
         initial_block->size = size;
+        printf("Intial block is now %d\n\n",initial_block->size);
 
         return newptr;
     }
@@ -141,10 +141,11 @@ static block_t * _free_list = NULL;
 
         while (head != NULL)
         {
-            if (head->size >= memory_to_allocate + block_header_size)
+            if (head->size >= memory_to_allocate + block_header_size || head->size == memory_to_allocate)
             {
                     block_memory = MEMORY_BLOCK(head);
 
+                    printf("Found a big enough block allocating %d bytes from a total of %d bytes.\n\n", memory_to_allocate, head->size);
                     remove_from_free_list(head);
 
                     //if we get an exact match to the size
@@ -157,10 +158,12 @@ static block_t * _free_list = NULL;
                     //the size is bigger, but not exact so need to take a chunck off our memory block
                     newblockptr = split_memory_block(head, memory_to_allocate);
                     add_to_free_list(newblockptr);
+
                     return block_memory;
             }
             else
             {
+                printf("Looked at block with %d of space.\nNeed enough for another header for the extra free space and the bytes to allocate\nThe total needed is: %d bytes.\n\n", head->size, memory_to_allocate + block_header_size);
                 head = head->next;
             }      
         }
@@ -171,6 +174,9 @@ static block_t * _free_list = NULL;
             - Set the head size (because its the beggining) to the size of the allocation from the system - the header
         */
         head = HeapAlloc(GetProcessHeap(), 0 , allocation_size); 
+
+        printf("No memory block big enough, getting %d bytes memory from OS\n\n", allocation_size);
+
         head->next = NULL;
         head->prev = NULL;
 
@@ -185,6 +191,11 @@ static block_t * _free_list = NULL;
         return MEMORY_BLOCK(head);             
     }
     
+    void zk_free(void * memory_to_free)
+    {
+        void * Header = HEADER_FOR_BLOCK(memory_to_free);
+        add_to_free_list(Header);
+    }
 
 
 #elif (defined(__linux__))
