@@ -1,63 +1,191 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 
-/*
-* Limitations currently set
-* - Because the new heap is fixed size, Windows only allows for a maximum of 512KB on 32-Bit and 1024KB on 64-Bit
-* - Can only hold up to one heap currently (look at GetProcessHeaps() to expand functionality)
-* - 
-*/
+
+//structure used to define free blocks of memory
+typedef struct memory_block 
+{
+
+	size_t size;
+	struct memory_block * next;
+	struct memory_block * prev;
+
+} block_t; 
+
+static block_t * _free_list = NULL;
+
+#define MEMORY_BLOCK(prt_to_block_info) ((void*)((unsigned long)prt_to_block_info + sizeof(block_t)))
+#define HEADER_FOR_BLOCK(ptr_to_memory) ((void*)((unsigned long)ptr_to_memory - sizeof(block_t)))
 
 
 #if (defined(_WIN32) || defined(__CYGWIN__))
-    #define OS "Windows"
-    //double the default on windows
-    #define support_heap_size 2048
-    #include <Heapapi.h>
+    #include <windows.h>
+    #include <Heapapi.h> 
 
-    static HANDLE heap_Memory_Support = NULL; 
+    unsigned long getDefaultPageSize()
+    {  
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
 
-    /**
-    * 
-    * This beggining part is to allow for DECLSPEC is for logging purposes
-    * @return void* - a pointer to the memory location.
-    * @param memory_To_Allocate - how many bytes of data you would like to allocate to the heap.
-    * 
-    */
-
-    void * zk_malloc(int memory_To_Allocate)
-    {   
-        //start the static HANDLE to the extra as NULL for comparison purposes
-        void *memory_Location;
-
-        //Try to allocate memory on the calling processes default heap
-        memory_Location = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, memory_To_Allocate);        
-        
-        if (memory_Location != NULL)
-        {
-
-            return memory_Location;
-
-        }
-        else if (heap_Memory_Support == NULL)
-        {
-
-            printf("%s", "Ran out of memory on default heap, creating new heap");
-            heap_Memory_Support = HeapCreate(0, 0, support_heap_size);
-            
-        }
-
-        memory_Location = HeapAlloc(heap_Memory_Support, HEAP_ZERO_MEMORY, memory_To_Allocate);
-
-        if (memory_Location == NULL)
-        {
-            fprintf(stderr, "Out of memory... Closing program.\n");
-            exit(-1);
-        }
-        
-        return memory_Location;    
-
+        return (unsigned long) si.dwPageSize;
     }
+
+    #ifndef ALLOCATION_BLOCK_SIZE   
+    #define ALLOCATION_BLOCK_SIZE 2 * getDefaultPageSize() 
+    #endif
+
+
+    void add_to_free_list(block_t * block)
+    {
+        block->prev = NULL;
+        block->next = NULL;
+
+        //if there is no free list or the address for free list is higher than that of block
+        if (!_free_list || (unsigned long)_free_list > (unsigned long)block)
+        {   
+            //this means that address is higher
+            if (_free_list)
+            {
+                //place current head previous to block
+                _free_list->prev = block;
+            }
+
+            //set block next to current free_list
+            block->next = _free_list;
+            //the current start is block
+            _free_list = block;
+        }
+        else
+        {
+            //set curr to the current free list start
+            block_t * curr = _free_list;
+            //while there is a current next and the current next address is < block
+            //go to the next block in the list
+            while (curr->next && (unsigned long)curr->next < (unsigned long)block) 
+            {
+                curr = curr->next;
+            }
+            //after you found a higher address, make it the blocks next
+            //then set the current next to the block
+            // current next -> block next-> orig current next 
+            block->next = curr->next;
+            curr->next = block;
+        }        
+    }
+
+    void remove_from_free_list(block_t * block)
+    {
+        //if there is no block prev
+        if (!block->prev)
+        {
+            //if there is a block next
+            if (block->next)
+            {
+                //the new head is block's next
+                _free_list = block->next;
+            }
+            else
+            {
+                //else there is no block to move to once removed
+                _free_list = NULL;
+            }
+        }
+        else
+        {
+            //if there is a previous , set the previous next to current blocks next
+            block->prev->next = block->next;
+        }
+
+        //if there is a block next (not the end)
+        if (block->next)
+        {
+            //block's next's previous is the block's current previous
+            block->next->prev = block->prev;
+        }
+        
+    }
+
+
+
+    block_t * split_memory_block(block_t * initial_block, size_t size)
+    {
+        //get a pointer to the block of memory - header
+        void * memory_block = MEMORY_BLOCK(initial_block);
+
+        //the new free ptr block location is the memory block ptr + the size of the data
+        block_t * newptr = (block_t *)((unsigned long)memory_block + size);
+
+        //get the new free data in the block by getting the intial size - the intial data + metadata struct block_t
+        newptr->size = initial_block->size - (size + sizeof(block_t));
+
+        //the intial block space is now ONLY the space of the data if it gets freed
+        initial_block->size = size;
+
+        return newptr;
+    }
+
+
+
+    void * zk_malloc(unsigned int memory_to_allocate)
+    {
+        void * block_memory;
+        block_t *head, *newblockptr, *start_look;
+        unsigned int block_header_size = sizeof(block_t);
+        //incase we need to allocate more memory because we cant find enough.
+        unsigned int allocation_size = memory_to_allocate >= ALLOCATION_BLOCK_SIZE ? memory_to_allocate + block_header_size : ALLOCATION_BLOCK_SIZE;
+
+        //ptr so we know we have looked through everything
+        start_look = _free_list;
+        head = _free_list;
+
+        while (head != NULL)
+        {
+            if (head->size >= memory_to_allocate + block_header_size)
+            {
+                    block_memory = MEMORY_BLOCK(head);
+
+                    remove_from_free_list(head);
+
+                    //if we get an exact match to the size
+                    if (head->size == memory_to_allocate)
+                    {
+                        //return a pointer exactly to the space the user can use.
+                        return block_memory;
+                    }
+
+                    //the size is bigger, but not exact so need to take a chunck off our memory block
+                    newblockptr = split_memory_block(head, memory_to_allocate);
+                    add_to_free_list(newblockptr);
+                    return block_memory;
+            }
+            else
+            {
+                head = head->next;
+            }      
+        }
+        /*
+            We got here because there is no ptr to a head of the free list because it hasnt been created before or there is no free memory
+            above should always hit some sort of return if it finds a big enough memory slot
+            get 2 pages of memory from the system (to reduce system calls)
+            - Set the head size (because its the beggining) to the size of the allocation from the system - the header
+        */
+        head = HeapAlloc(GetProcessHeap(), 0 , allocation_size); 
+        head->next = NULL;
+        head->prev = NULL;
+
+        //need to get ONLY AVAILABLE memory because we will need the header before
+        head->size = ALLOCATION_BLOCK_SIZE - block_header_size;
+
+        if (ALLOCATION_BLOCK_SIZE > memory_to_allocate + block_header_size)
+        {
+            newblockptr = split_memory_block(head, memory_to_allocate);
+            add_to_free_list(newblockptr);
+        } 
+        return MEMORY_BLOCK(head);             
+    }
+    
+
 
 #elif (defined(__linux__))
     #define OS "Linux"
