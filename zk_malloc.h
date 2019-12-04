@@ -163,7 +163,7 @@ static block_t * _free_list = NULL;
             }
             else
             {
-                printf("Looked at block with %d of space.\nNeed enough for another header for the extra free space and the bytes to allocate\nThe total needed is: %d bytes.\n\n", head->size, memory_to_allocate + block_header_size);
+                printf("Looked at block with %d of space.\nNeed enough for another header for the extra free space and the bytes to allocate\nThe total needed is: %d bytes or %d bytes (the size of the data is a perfect match).\n\n", head->size, memory_to_allocate + block_header_size, memory_to_allocate);
                 head = head->next;
             }      
         }

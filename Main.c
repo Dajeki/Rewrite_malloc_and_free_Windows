@@ -13,6 +13,11 @@ int main(void){
     int * test2 = zk_malloc(sizeof(int));
     int * test3 = zk_malloc(sizeof(int));
 
+    *test2 = 7;
+    *test3 = 9;
+
+    printf("Use of test2 %d, Use of test3 %d\n\n", *test2, *test3);
+    
     zk_free(test2);
     zk_free(test3);
 
