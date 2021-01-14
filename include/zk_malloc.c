@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
-//Dont need to include header because function order is safe.
+#include "zk_malloc.h"
 
 //structure used to define free blocks of memory
 typedef struct memory_block 
